@@ -1,0 +1,424 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(tidyverse, knitr, ggplot2, plotly, gganimate, transformr)
+
+options(scipen = 999)
+```
+
+```{r, echo = TRUE, include = T}
+data(faithful)
+waiting = as.matrix(faithful[, 2, drop = FALSE])
+
+data(faithful)
+
+waiting  = as.matrix(faithful[, 2, drop = FALSE])
+
+waiting_plot <- ggplot(as.data.frame(waiting), aes(x = waiting)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 breaks = seq(min(waiting), max(waiting), length.out = 21),
+                 col = "lightcyan4", fill = "lightcyan3") +
+  geom_density(col = "indianred2", linewidth = 1
+               ) +
+  labs(x = "Time between two eruptions (in minutes)", y = "Density") +
+  theme_minimal() +
+  ggtitle("Density and Histogram of Elapsing Time Between Eruption")
+
+waiting_plot
+```
+
+```{r, echo = TRUE, include = T}
+# prepare the data
+X <- waiting
+N <- length(X)
+
+# define log.lik helper function
+log.lik <- function(X, mu_1, mu_2, var_1, var_2, pi_1, pi_2) {
+sum(log(pi_1 * dnorm(X, mu_1, sd = sqrt(var_1)) + pi_2 * dnorm(X, mu_2, sd = sqrt(var_2))))
+}
+
+# em function
+em_mixture <- function(starting_values, X, tol = .0001, maxits = 100) {
+  
+  # initialize convergence to false and iteration number to 0
+converged <- FALSE 
+iter <- 0
+N <- length(X)
+
+  # initialize starting values
+pi_1 <- starting_values$pi_1 
+pi_2 <- starting_values$pi_2 
+mu_1 <- starting_values$mu_1 
+mu_2 <- starting_values$mu_2 
+var_1 <- starting_values$var_1 
+var_2 <- starting_values$var_2
+
+  # to save vector of log likelihoods and means
+log_likelihoods <- numeric(maxits) 
+saved_mu_1 <- numeric(maxits) 
+saved_mu_2 <- numeric(maxits) 
+ll_changes <- numeric(maxits - 1)
+saved_var_1 <- numeric(maxits) 
+saved_var_2 <- numeric(maxits) 
+saved_pi_1 <- numeric(maxits) 
+saved_pi_2 <- numeric(maxits) 
+while ((!converged) & (iter < maxits)) {
+  
+# 1. evaluate the log likelihood at the initial parameters +
+
+  ll <- log.lik(X = X,
+                  pi_1 = pi_1,
+                  pi_2 = pi_2,
+                  mu_1 = mu_1,
+                  mu_2 = mu_2,
+                  var_1 = var_1,
+                  var_2 = var_2)
+
+# 2. E-Step
+gamma_1 <- pi_1 * dnorm(X, mu_1, sd = sqrt(var_1)) /
+(pi_1 * dnorm(X, mu_1, sd = sqrt(var_1)) + pi_2 * dnorm(X, mu_2, sd = sqrt(var_2)))
+
+gamma_2 <- pi_2 * dnorm(X, mu_2, sd = sqrt(var_2)) /
+(pi_1 * dnorm(X, mu_1, sd = sqrt(var_1)) + pi_2 * dnorm(X, mu_2, sd = sqrt(var_2)))
+
+# 3. M-Step
+# 
+pi_1 <- sum(gamma_1)/N 
+pi_2 <- sum(gamma_2)/N
+mu_1 <- sum(X * gamma_1) / sum(gamma_1)
+mu_2 <- sum(X * gamma_2) / sum(gamma_2)
+var_1 <- sum((X - mu_1)^2 * gamma_1) / sum(gamma_1) 
+var_2 <- sum((X - mu_2)^2 * gamma_2) / sum(gamma_2)
+
+    # 4. evaluate the log likelihood at the new parameter values
+ll.new <- log.lik(X = X,
+pi_1 = pi_1,
+                      pi_2 = pi_2,
+                      mu_1 = mu_1,
+                      mu_2 = mu_2,
+                      var_1 = var_1,
+                      var_2 = var_2)
+
+    # store new parameters
+log_likelihoods[iter + 1] <- ll.new 
+saved_mu_1[iter + 1] <- mu_1 
+saved_mu_2[iter + 1] <- mu_2
+saved_var_1[iter + 1] <- var_1
+saved_var_2[iter + 1] <- var_2
+saved_pi_1[iter + 1] <- pi_1
+saved_pi_2[iter + 1] <- pi_2
+
+if (iter > 0) {
+ll_changes[iter] <- abs(ll - ll.new) }
+
+    # 5. check convergence
+if(abs(ll - ll.new) < tol) { converged <- TRUE
+}
+
+    # next iteration
+iter <- iter + 1
+
+    # message to keep track of progress
+cat(paste0("Running iteration ", iter, ". Log likelihood changed by ", round(abs(ll - ll.new), 4), "\n"))
+}
+
+  # save the parameter values
+params <- data.frame(pi_1 = pi_1, 
+                     pi_2 = pi_2,
+                     mu_1 = mu_1,
+                     mu_2 = mu_2,
+                     var_1 = var_1, 
+                     var_2 = var_2) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c(".value", "group"), names_pattern = "(.*)_(.)"
+    )
+
+final_gammas_df <- data.frame( obs = 1:length(gamma_1),
+waiting_1 = round(gamma_1, 5),
+waiting_2 = round(gamma_2, 5) )
+
+return(list(
+params = params,
+log_likelihoods = log_likelihoods[1:iter], 
+ll_changes = ll_changes[1:(iter - 1)], 
+saved_mu_1 = saved_mu_1[1:iter], 
+saved_mu_2 = saved_mu_2[1:iter], 
+final_gammas = (head(final_gammas_df)),
+saved_var_1 = saved_var_1[1:iter],
+saved_var_2 = saved_var_2[1:iter],
+saved_pi_1 = saved_pi_1[1:iter],
+saved_pi_2 = saved_pi_2[1:iter]
+))
+}
+
+```
+
+``` {r}
+starting_values_1 <- list(pi_1 = .5, pi_2 = .5, mu_1 = 55, mu_2 = 80, var_1 = 1, var_2 = 1)
+starting_values_2 <- list(pi_1 = .5, pi_2 = .5, mu_1 = 30, mu_2 = 60, var_1 = 1, var_2 = 1)
+
+em1 <- em_mixture(starting_values = starting_values_1, X = waiting)
+em1
+
+em2 <- em_mixture(starting_values = starting_values_2, X = waiting)
+em2
+
+```
+
+<br>
+
+Indeed, for EM2
+
+```{r}
+# for em2
+em_params_2 <- em2$params
+em_log_likelihoods_2 <- em2$log_likelihoods
+em_saved_mu_1_2 <- em2$saved_mu_1
+em_saved_mu_2_2 <- em2$saved_mu_2
+em_final_gammas_2 <- em2$final_gammas
+ll_changes_2 <- em2$ll_changes
+
+# plotting log likelihoods
+em_ll_df_2 <-  tibble(
+  obs = 1:length(em_log_likelihoods_2),
+  em_log_likelihoods = (em_log_likelihoods_2)
+ )
+
+em_ll_plot_2 <- ggplot(em_ll_df_2, aes(x = obs, y = em_log_likelihoods)) +
+  geom_line(col = "indianred2", linewidth = 1) +  
+  theme_minimal()
+
+em_ll_plot_2
+
+# plotting change in log likelihood at each iteration
+ll_change_df_2 <- data.frame(
+    iteration = 1:length(ll_changes_2),
+    ll_change = ll_changes_2
+)
+
+ggplot(ll_change_df_2, aes(x = iteration, y = ll_change)) +
+    geom_line() +
+    theme_minimal()
+```
+
+<br>
+
+While for EM1:
+
+```{r}
+# for em1
+em_params_1 <- em1$params
+em_log_likelihoods_1 <- em1$log_likelihoods
+em_saved_mu_1_1 <- em1$saved_mu_1
+em_saved_mu_2_1 <- em1$saved_mu_2
+em_final_gammas_1 <- em1$final_gammas
+ll_changes_1 <- em1$ll_changes
+
+# plotting log likelihoods
+em_ll_df_1 <-  tibble(
+  iteration = 1:length(em_log_likelihoods_1),
+  em_log_likelihoods = (em_log_likelihoods_1)
+ )
+
+em_ll_plot_1 <- ggplot(em_ll_df_1, aes(x = iteration, y = em_log_likelihoods)) +
+  geom_line(col = "indianred2", linewidth = 1) +  
+  theme_minimal()
+
+em_ll_plot_1
+
+# plotting change in log likelihood at each iteration
+ll_change_df_1 <- data.frame(
+    iteration = 1:length(ll_changes_1),
+    ll_change = ll_changes_1
+)
+
+ggplot(ll_change_df_1, aes(x = iteration, y = ll_change)) +
+    geom_line() +
+    theme_minimal()
+```
+
+<br>
+
+## Asya's Fun
+
+It plots the log likelihood as a function of mu_1 at a particular iteration (evaluated at the current maximizing levels of the other parameters)
+
+### as a function of mu_1
+
+```{r}
+log.lik2 <- function(data, mu_1, mu_2, var_1, var_2, pi_1, pi_2) {
+  sum(log(pi_1 * dnorm(data, mu_1, sd = sqrt(var_1)) + pi_2 * dnorm(data, mu_2, sd = sqrt(var_2))))
+}
+
+plot.lik.tot.mu_1 <- function(iter, em) {
+  x_values <- seq(0, 95, length.out = 1000)
+  ll <- sapply(x_values, function(x) log.lik2(data = waiting, 
+                                              mu_1 = x,
+                                              mu_2 = em$saved_mu_2[iter],
+                                              var_1 = em$saved_var_1[iter], 
+                                              var_2 = em$saved_var_2[iter],
+                                              pi_1 = em$saved_pi_1[iter],
+                                              pi_2 = em$saved_pi_2[iter]))
+  plot(x_values, ll, type = "l")
+  points(x_values[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.part.mu_1 <- function(iter, em) {
+  ll <- sapply(X = seq(40, 60, length.out = 1000),
+               FUN = function(x) log.lik2(data = waiting,
+                                         mu_1 = x,
+                                         mu_2 = em$saved_mu_2[iter],
+                                         var_1 = em$saved_var_1[iter],
+                                         var_2 = em$saved_var_2[iter],
+                                         pi_1 = em$saved_pi_1[iter],
+                                         pi_2 = em$saved_pi_2[iter]))
+  
+  plot(seq(40, 60, length.out = 1000), ll, type = "l")
+  points(seq(40, 60, length.out = 1000)[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.tot.mu_1(em = em2, iter = 9)
+plot.lik.part.mu_1(em = em2, iter = 9)
+```
+
+### as a function of mu_2
+
+```{r}
+plot.lik.tot_mu2 <- function(iter, em) {
+  x_values <- seq(0, 95, length.out = 1000)
+  ll <- sapply(x_values, function(x) log.lik2(data = waiting, 
+                                              mu_1 = em$saved_mu_1[iter],
+                                              mu_2 = x, 
+                                              var_1 = em$saved_var_1[iter], 
+                                              var_2 = em$saved_var_2[iter],
+                                              pi_1 = em$saved_pi_1[iter],
+                                              pi_2 = em$saved_pi_2[iter]))
+  plot(x_values, ll, type = "l")
+  points(x_values[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.part_mu2 <- function(iter, em) {
+  ll <- sapply(X = seq(40, 60, length.out = 1000),
+               FUN = function(x) log.lik2(data = waiting,
+                                         mu_1 = em$saved_mu_1[iter],
+                                         mu_2 = x,
+                                         var_1 = em$saved_var_1[iter],
+                                         var_2 = em$saved_var_2[iter],
+                                         pi_1 = em$saved_pi_1[iter],
+                                         pi_2 = em$saved_pi_2[iter]))
+  
+  plot(seq(40, 60, length.out = 1000), ll, type = "l")
+  points(seq(40, 60, length.out = 1000)[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.tot_mu2(em = em2, iter = 14)
+plot.lik.part_mu2(em = em2, iter = 14)
+```
+
+### Given fixed parameters 
+
+```{r}
+plot.lik.tot <- function(iter, em) {
+  x_values <- seq(0, 95, length.out = 1000)
+  ll <- sapply(x_values, function(x) log.lik2(data = x, 
+                                              mu_1 = em$saved_mu_1[iter],
+                                              mu_2 = em$saved_mu_2[iter],
+                                              var_1 = em$saved_var_1[iter], 
+                                              var_2 = em$saved_var_2[iter],
+                                              pi_1 = em$saved_pi_1[iter],
+                                              pi_2 = em$saved_pi_2[iter]))
+  plot(x_values, ll, type = "l")
+  points(x_values[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.part <- function(iter, em) {
+  ll <- sapply(X = seq(40, 60, length.out = 1000),
+               FUN = function(x) log.lik2(data = x,
+                                         mu_1 = em$saved_mu_1[iter],
+                                         mu_2 = em$saved_mu_2[iter],
+                                         var_1 = em$saved_var_1[iter],
+                                         var_2 = em$saved_var_2[iter],
+                                         pi_1 = em$saved_pi_1[iter],
+                                         pi_2 = em$saved_pi_2[iter]))
+  
+  plot(seq(40, 60, length.out = 1000), ll, type = "l")
+  points(seq(40, 60, length.out = 1000)[which.max(ll)], max(ll), col = "red", pch = 19)
+}
+
+plot.lik.tot(em = em2, iter = 14)
+plot.lik.part(em = em2, iter = 14)
+```
+
+## total animation EM2 fixed
+```{r}
+# complete plot
+plot.lik.tot.animation <- function(em, start_iter, end_iter) {
+  x_values <- seq(0, 90, length.out = 1000)
+  data_list <- lapply(start_iter:end_iter, function(iter) {
+    ll <- sapply(x_values, FUN = function(x) log.lik2(data = x,
+                                                      mu_1 = em$saved_mu_1[iter],
+                                                      mu_2 = em$saved_mu_2[iter],
+                                                      var_1 = em$saved_var_1[iter],
+                                                      var_2 = em$saved_var_2[iter],
+                                                      pi_1 = em$saved_pi_1[iter],
+                                                      pi_2 = em$saved_pi_2[iter]))
+    data.frame(iter = iter, x = x_values, ll = ll)
+  })
+
+  data <- do.call(rbind, data_list)
+
+  p <- ggplot(data, aes(x = x, y = ll, group = iter)) +
+       geom_line() +
+       transition_states(states = iter, transition_length = 2, state_length = 1) +
+       labs(title = "Iteration: {closest_state}") +
+       theme_minimal()
+
+  animate(p, nframes = 100, duration = 5, width = 800, height = 600)
+}
+
+# Use the function like this
+plot.lik.tot.animation(em = em2, start_iter = 0, end_iter = 50)
+```
+
+## total animation EM1 fixed
+```{r}
+plot.lik.tot.animation(em = em1, start_iter = 0, end_iter = 10)
+```
+
+## total animation EM2 varying mu_1
+```{r}
+# complete plot
+plot.lik.tot.mu_1_animation <- function(em, start_iter, end_iter) {
+  x_values <- seq(0, 95, length.out = 1000)
+  data_list <- lapply(start_iter:end_iter, function(iter) {
+    ll <- sapply(x_values, function(x) log.lik2(data = waiting, 
+                                                mu_1 = x,
+                                                mu_2 = em$saved_mu_2[iter],
+                                                var_1 = em$saved_var_1[iter], 
+                                                var_2 = em$saved_var_2[iter],
+                                                pi_1 = em$saved_pi_1[iter],
+                                                pi_2 = em$saved_pi_2[iter]))
+    data.frame(iter = iter, x = x_values, ll = ll)
+  })
+
+  data <- do.call(rbind, data_list)
+  p <- ggplot(data, aes(x = x, y = ll, group = iter)) +
+       geom_line() +
+       transition_states(states = iter, transition_length = 2, state_length = 1) +
+       labs(title = "Iteration: {closest_state}") +
+       theme_minimal()
+
+  animate(p, duration = 5, nframes = 100, width = 800, height = 600)
+}
+
+# Use the function like this
+plot.lik.tot.mu_1_animation(em = em2, start_iter = 1, end_iter = 30)
+```
+
